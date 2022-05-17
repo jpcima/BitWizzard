@@ -29,6 +29,8 @@ struct BWProcessor::Impl {
         std::atomic<float> *chip_rate = nullptr;
         std::atomic<float> *quant_bits = nullptr;
         std::atomic<float> *quant_scale = nullptr;
+        std::atomic<float> *delta_speed = nullptr;
+        std::atomic<float> *delta_noise = nullptr;
     } m_param;
 };
 
@@ -46,6 +48,14 @@ BWProcessor::BWProcessor()
         return [suffix](int value, int maxlen) -> juce::String {
             (void)maxlen;
             return juce::String(value) + suffix;
+        };
+    };
+    auto unitFormatterInt2 = [](const char *unit, const char *plural) -> std::function<juce::String(int, int)> {
+        juce::String suffix = ' ' + juce::String{juce::CharPointer_UTF8{unit}};
+        juce::String suffix2 = ' ' + juce::String{juce::CharPointer_UTF8{plural}};
+        return [suffix, suffix2](int value, int maxlen) -> juce::String {
+            (void)maxlen;
+            return juce::String(value) + ((std::abs(value) > 1) ? suffix2 : suffix);
         };
     };
     auto unitFormatterFloat = [](const char *unit) -> std::function<juce::String(float, int)> {
@@ -76,11 +86,21 @@ BWProcessor::BWProcessor()
                 juce::NormalisableRange<float>{-20, +20}, 0,
                 juce::String{}, juce::AudioProcessorParameter::genericParameter,
                 unitFormatterFloat("dB")),
+            std::make_unique<juce::AudioParameterInt>(
+                "delta-speed", "Delta speed",
+                1, 16, 1,
+                juce::String{}, unitFormatterInt2("step", "steps")),
+            std::make_unique<juce::AudioParameterFloat>(
+                "delta-noise", "Delta noise",
+                juce::NormalisableRange<float>{0, 2}, 1,
+                juce::String{}, juce::AudioProcessorParameter::genericParameter),
         });
 
     impl->m_param.chip_rate = impl->m_treestate->getRawParameterValue("chip-rate");
     impl->m_param.quant_bits = impl->m_treestate->getRawParameterValue("quant-bits");
     impl->m_param.quant_scale = impl->m_treestate->getRawParameterValue("quant-scale");
+    impl->m_param.delta_speed = impl->m_treestate->getRawParameterValue("delta-speed");
+    impl->m_param.delta_noise = impl->m_treestate->getRawParameterValue("delta-noise");
 }
 
 BWProcessor::~BWProcessor()
@@ -258,9 +278,13 @@ void BWProcessor::processChipDSP(const juce::AudioBuffer<float> &inputs, juce::A
     float scale_db = impl->m_param.quant_scale->load(std::memory_order_relaxed);
     float scale_factor = std::pow(10.0f, scale_db / 20);
     float quant_bits = impl->m_param.quant_bits->load(std::memory_order_relaxed);
+    int delta_speed = (int)impl->m_param.delta_speed->load(std::memory_order_relaxed);
+    float delta_noise = impl->m_param.delta_noise->load(std::memory_order_relaxed);
 
     float quant_factor_from_16 = scale_factor * std::exp2(quant_bits - 1) / 32767.0f;
     float quant_factor_to_16 = 32767.0f / std::exp2(quant_bits - 1) / scale_factor;
+
+    int delta_noise16b = juce::roundToInt(quant_factor_to_16 * delta_noise);
 
     for (int ch = 0; ch < nchan; ++ch) {
         const float *in = inputs.getReadPointer(ch);
@@ -278,13 +302,19 @@ void BWProcessor::processChipDSP(const juce::AudioBuffer<float> &inputs, juce::A
             int targetQ = juce::roundToInt((float)inp16b * quant_factor_from_16);
 
             // calculate the differential
-            bool up = targetQ > sampleQ;
+            int delta = juce::jlimit(-delta_speed, +delta_speed, targetQ - sampleQ);
+            //delta = delta ? delta : 1;
 
-            // advance one step up or down
-            sampleQ += up ? +1 : -1;
+            // advance some steps up or down
+            sampleQ += delta;
 
             // quantize up / unscale
             int out16b = juce::roundToInt((float)sampleQ * quant_factor_to_16);
+
+            // if delta = 0, add delta static noise (upwards)
+            out16b += delta ? 0 : delta_noise16b;
+            // and pretend the signal moved up 1 step
+            sampleQ += delta ? 0 : 1;
 
             // to single-float
             float out32f = (float)out16b / 32767.0f;
