@@ -281,8 +281,8 @@ void BWProcessor::processChipDSP(const juce::AudioBuffer<float> &inputs, juce::A
     int delta_speed = (int)impl->m_param.delta_speed->load(std::memory_order_relaxed);
     float delta_noise = impl->m_param.delta_noise->load(std::memory_order_relaxed);
 
-    float quant_factor_from_24 = scale_factor * std::exp2(quant_bits - 1) / 8388607.0f;
-    float quant_factor_to_24 = 8388607.0f / std::exp2(quant_bits - 1) / scale_factor;
+    float quant_factor_from_24 = std::exp2(quant_bits - 1) / 8388607.0f;
+    float quant_factor_to_24 = 8388607.0f / std::exp2(quant_bits - 1);
 
     int delta_noise24b = juce::roundToInt(quant_factor_to_24 * delta_noise);
 
@@ -299,7 +299,7 @@ void BWProcessor::processChipDSP(const juce::AudioBuffer<float> &inputs, juce::A
             int inp24b = juce::jlimit(-8388607, +8388607, juce::roundToInt(inp32f * 8388607.0f));
 
             // quantize down / scale
-            int targetQ = juce::roundToInt((float)inp24b * quant_factor_from_24);
+            int targetQ = juce::roundToInt((float)inp24b * (quant_factor_from_24 * scale_factor));
 
             // calculate the differential
             int delta = juce::jlimit(-delta_speed, +delta_speed, targetQ - sampleQ);
@@ -309,7 +309,7 @@ void BWProcessor::processChipDSP(const juce::AudioBuffer<float> &inputs, juce::A
             sampleQ += delta;
 
             // quantize up / unscale
-            int out24b = juce::roundToInt((float)sampleQ * quant_factor_to_24);
+            int out24b = juce::roundToInt((float)sampleQ * (quant_factor_to_24 / scale_factor));
 
             // if delta = 0, add delta static noise (upwards)
             out24b += delta ? 0 : delta_noise24b;
