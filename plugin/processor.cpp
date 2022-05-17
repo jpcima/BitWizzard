@@ -3,7 +3,9 @@
 
 #include "processor.hpp"
 #include "definitions.hpp"
+#include "fast_random.hpp"
 #include "WDLex/resampleMOD.h"
+#include <array>
 #include <vector>
 #include <memory>
 #include <algorithm>
@@ -14,6 +16,7 @@ struct BWProcessor::Impl {
 
     // chip DSP stuff
     juce::Array<int16_t> m_last_q_sample;
+    std::array<fast_gaussian_generator<float, 2>, 2> m_dith;
 
     // resampling stuff
     int m_active_chip_rate = -1;
@@ -118,6 +121,16 @@ void BWProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     // chip DSP stuff
     impl->m_last_q_sample.clearQuick();
     impl->m_last_q_sample.resize(nchan);
+
+    for (size_t i = 0, n = impl->m_dith.size(); i < n; ++i) {
+        fast_gaussian_generator<float, 2> &dith = impl->m_dith[i];
+        dith.set_mean(0);
+        dith.set_deviation(1);
+        if (i > 0)
+            dith.seed_after(impl->m_dith[0]);
+        else
+            dith.seed(0);
+    }
 
     // resampling stuff
     impl->m_active_chip_rate = -1;
@@ -284,7 +297,11 @@ void BWProcessor::processChipDSP(const juce::AudioBuffer<float> &inputs, juce::A
     float quant_factor_from_24 = std::exp2(quant_bits - 1) / 8388607.0f;
     float quant_factor_to_24 = 8388607.0f / std::exp2(quant_bits - 1);
 
-    int delta_noise24b = juce::roundToInt(quant_factor_to_24 * delta_noise);
+    fast_gaussian_generator<float, 2> &dith_24_to_Q = impl->m_dith[0];
+    fast_gaussian_generator<float, 2> &dith_Q_to_24 = impl->m_dith[1];
+
+    dith_24_to_Q.set_gain(quant_factor_to_24 * 0.25f);
+    dith_Q_to_24.set_gain(quant_factor_from_24 * 0.25f);
 
     for (int ch = 0; ch < nchan; ++ch) {
         const float *in = inputs.getReadPointer(ch);
@@ -296,24 +313,27 @@ void BWProcessor::processChipDSP(const juce::AudioBuffer<float> &inputs, juce::A
             float inp32f = in[i];
 
             // to 24-bit
-            int inp24b = juce::jlimit(-8388607, +8388607, juce::roundToInt(inp32f * 8388607.0f));
+            float inp24b = juce::jlimit(-8388607.0f, +8388607.0f, inp32f * 8388607.0f);
 
             // quantize down / scale
-            int targetQ = juce::roundToInt((float)inp24b * (quant_factor_from_24 * scale_factor));
+            int targetQ = juce::roundToInt(
+                (dith_24_to_Q() + (float)inp24b * scale_factor)
+                * quant_factor_from_24);
 
             // calculate the differential
             int delta = juce::jlimit(-delta_speed, +delta_speed, targetQ - sampleQ);
-            //delta = delta ? delta : 1;
 
             // advance some steps up or down
             sampleQ += delta;
 
             // quantize up / unscale
-            int out24b = juce::roundToInt((float)sampleQ * (quant_factor_to_24 / scale_factor));
+            int out24b = juce::roundToInt(
+                (dith_Q_to_24() + (float)sampleQ / scale_factor)
+                * quant_factor_to_24
+                // if delta = 0, add delta static noise (upwards)
+                + (delta ? 0 : (delta_noise * quant_factor_to_24)));
 
-            // if delta = 0, add delta static noise (upwards)
-            out24b += delta ? 0 : delta_noise24b;
-            // and pretend the signal moved up 1 step
+            // if delta = 0, pretend the signal moved up 1 step
             sampleQ += delta ? 0 : 1;
 
             // to single-float

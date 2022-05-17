@@ -103,16 +103,6 @@ private:
 };
 
 /**
- * @brief Global random singletons
- *
- * TODO: could be moved into a singleton class holder
- *
- */
-namespace Random {
-static fast_rand randomGenerator;
-} // namespace Random
-
-/**
  * @brief Generate normally distributed noise.
  *
  * This sums the output of N uniform random generators.
@@ -123,35 +113,57 @@ class fast_gaussian_generator {
     static_assert(N > 1, "Invalid quality setting");
 
 public:
-    explicit fast_gaussian_generator(float mean, float variance, uint32_t initialSeed = Random::randomGenerator())
+    fast_gaussian_generator() = default;
+
+    explicit fast_gaussian_generator(T mean, T dev, uint32_t initialSeed = 0)
+    {
+        set_mean(mean);
+        set_deviation(dev);
+        seed(initialSeed);
+    }
+
+    void set_mean(T mean)
     {
         mean_ = mean;
-        gain_ = variance / std::sqrt(N / 3.0);
-        seed(initialSeed);
+    }
+
+    void set_deviation(T dev)
+    {
+        set_gain(dev / std::sqrt(N / T{3}));
+    }
+
+    void set_gain(T gain)
+    {
+        gain_ = gain;
     }
 
     void seed(uint32_t s)
     {
-        seeds_[0] = s;
-        for (unsigned i = 1; i < N; ++i) {
+        for (unsigned i = 0; i < N; ++i) {
             s += s * 1664525u + 1013904223u;
             seeds_[i] = s;
         }
     }
 
-    float operator()() noexcept
+    template <class OtherT, unsigned OtherN>
+    void seed_after(const fast_gaussian_generator<OtherT, OtherN> &other)
     {
-        float sum = 0;
+        seed(other.seeds_[OtherN - 1]);
+    }
+
+    T operator()() noexcept
+    {
+        T sum = 0;
         for (unsigned i = 0; i < N; ++i) {
             uint32_t next = seeds_[i] * 1664525u + 1013904223u;
             seeds_[i] = next;
-            sum += static_cast<int32_t>(next) * (1.0f / (1ll << 31));
+            sum += static_cast<int32_t>(next) * (T{1} / (1ll << 31));
         }
         return mean_ + gain_ * sum;
     }
 
 private:
     std::array<uint32_t, N> seeds_ {{}};
-    float mean_ { 0 };
-    float gain_ { 0 };
+    T mean_ { 0 };
+    T gain_ { 0 };
 };
