@@ -68,6 +68,11 @@ BWProcessor::BWProcessor()
             return juce::String(value) + suffix;
         };
     };
+    auto unitFormatterPercentNormalized =
+        [](float value, int maxlen) -> juce::String {
+            (void)maxlen;
+            return juce::String(value * 100, 1) + " %";
+        };
 
     //
     impl->m_self = this;
@@ -96,7 +101,8 @@ BWProcessor::BWProcessor()
             std::make_unique<juce::AudioParameterFloat>(
                 "delta-noise", "Delta noise",
                 juce::NormalisableRange<float>{0, 2}, 1,
-                juce::String{}, juce::AudioProcessorParameter::genericParameter),
+                juce::String{}, juce::AudioProcessorParameter::genericParameter,
+                unitFormatterPercentNormalized),
         });
 
     impl->m_param.chip_rate = impl->m_treestate->getRawParameterValue("chip-rate");
