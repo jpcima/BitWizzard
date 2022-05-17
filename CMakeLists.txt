@@ -38,6 +38,10 @@ target_include_directories(WDL PUBLIC
   "thirdparty/WDL")
 
 ###
+add_library(fast_random INTERFACE)
+target_include_directories(fast_random INTERFACE "thirdparty/fast_random/sources")
+
+###
 juce_add_plugin(bitwiz_plugin
   PLUGIN_CODE "BtWz"
   PLUGIN_MANUFACTURER_CODE "BtWz"
@@ -68,6 +72,7 @@ target_compile_definitions(bitwiz_plugin
 target_link_libraries(bitwiz_plugin
   PRIVATE
       WDL
+      fast_random
       juce::juce_audio_processors
       juce::juce_gui_basics
       juce::juce_gui_extra
